@@ -11,5 +11,11 @@ test:
 
 clean:
 	rebar3 clean
+	rm -fr _build/venv
 
-.PHONY: all compile dialyzer test
+setup:
+	mkdir -p _build
+	virtualenv _build/venv
+	_build/venv/bin/pip install tchannel
+
+.PHONY: all compile dialyzer test setup
