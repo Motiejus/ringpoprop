@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+import sys
+
 from tornado import ioloop
 from tchannel import TChannel
 
@@ -13,5 +15,6 @@ def handler(request):
 
 if __name__ == '__main__':
     tchannel.listen()
-    print('Listening on %s' % tchannel.hostport)
+    print(tchannel.hostport)
+    sys.stdout.flush()
     ioloop.IOLoop.current().start()
