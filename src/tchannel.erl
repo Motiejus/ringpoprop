@@ -1,4 +1,4 @@
--module(ringpoprop_tchannel).
+-module(tchannel).
 
 -define(TCHANNEL_LIB_VERSION, <<"0.1">>).  % version of this tchannel library
 -define(TCHANNEL_VERSION, 2).
@@ -22,16 +22,9 @@
 
 -type packet_id() :: 0..16#fffffffe.
 
--type header() ::
-    host_port                 |
-    process_name              |
-    tchannel_language         |
-    tchannel_language_version |
-    tchannel_version.
-
 -record(state, {
           sock :: gen_tcp:socket(),
-          headers :: [{header(), binary()}],
+          headers :: [{binary(), binary()}],
           version :: pos_integer()  % tchannel version reported by remote
 }).
 -opaque state() :: #state{}.
@@ -40,7 +33,7 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
--export([connect/2]).
+-export([connect/2, headers/1, header/2, close/1]).
 
 -spec connect(Address, Port) -> {ok, State} | {error, Reason} when
       Address :: inet:ip_address() | inet:hostname(),
@@ -48,6 +41,32 @@
       State :: state(),
       Reason :: error_reason().
 connect(Address, Port) ->
+    connect_1(Address, Port).
+
+-spec headers(State) -> [{HeaderKey, HeaderVal}] when
+      State :: state(),
+      HeaderKey :: binary(),
+      HeaderVal :: binary().
+headers(#state{headers=Headers}) ->
+    Headers.
+
+-spec header(State, HeaderKey) -> HeaderVal when
+      State :: state(),
+      HeaderKey :: binary(),
+      HeaderVal :: undefined | binary().
+header(#state{headers=Headers}, HeaderKey) ->
+    proplists:get_value(HeaderKey, Headers).
+
+-spec close(State) -> ok when
+      State :: state().
+close(#state{sock=Socket}) ->
+    gen_tcp:close(Socket).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Internal stuff
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+connect_1(Address, Port) ->
     case gen_tcp:connect(Address, Port, [binary, {active, false}]) of
         {ok, Sock} ->
             State = #state{sock=Sock},
@@ -80,9 +99,6 @@ init_res(#state{sock=Sock}=State) ->
             {error, Reason}
     end.
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Internal stuff
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 -spec receive_headers(State, NH) -> {ok, State} | {error, Reason} when
       State :: state(),
       NH :: pos_integer(),
@@ -95,19 +111,16 @@ receive_headers(State, 0, Acc) ->
 receive_headers(#state{sock=Sock}=State, NH, Acc) ->
     case receive_header_value(Sock) of
         {ok, Key} ->
-            case {receive_header_value(Sock), header_b2a(Key)} of
-                {{ok, _Value}, undefined} ->  % ignore header
-                    receive_headers(State, NH+1, Acc);
-                {{ok, Value}, KeyB} ->  % known header, accumulate
-                    Acc2 = [{KeyB, Value} | Acc],
+            case receive_header_value(Sock) of
+                {ok, Value} ->
+                    Acc2 = [{Key, Value} | Acc],
                     receive_headers(State, NH+1, Acc2);
-                {{error, Reason2}, _} ->
+                {error, Reason2} ->
                     {error, Reason2}
             end;
         {error, Reason1} ->
             {error, Reason1}
     end.
-
 
 %% @doc Receive size-2 key and value from a socket.
 -spec receive_header_value(Sock) -> {ok, Value} | {error, Reason} when
@@ -123,7 +136,7 @@ receive_header_value(Sock) ->
     end.
 
 %% @doc Construct packet for init_req
--spec construct_init_req() -> Packet when Packet :: iolist().
+-spec construct_init_req() -> Packet when Packet :: iodata().
 construct_init_req() ->
     OTP = list_to_binary(erlang:system_info(otp_release)),
     Headers = [
@@ -157,8 +170,8 @@ construct_init_req() ->
 -spec construct_packet(Type, Id, Payload) -> Packet when
       Type :: packet_type(),
       Id :: packet_id(),
-      Payload :: iolist(),
-      Packet :: iolist().
+      Payload :: iodata(),
+      Packet :: iodata().
 construct_packet(Type, Id, Payload) ->
     Size = iolist_size(Payload) + 16,
     TypeNum = type_num(Type),
@@ -183,12 +196,3 @@ type_num(init_req) ->               16#01.
 %type_num(ping_req) ->               16#d0;
 %type_num(ping_res) ->               16#d1;
 %type_num(error) ->                  16#ff.
-
-%% @doc Convert header binary to atom.
--spec header_b2a(binary()) ->                  header() | undefined.
-header_b2a(<<"host_port">>) ->                 host_port;
-header_b2a(<<"process_name">>) ->              process_name;
-header_b2a(<<"tchannel_language">>) ->         tchannel_language;
-header_b2a(<<"tchannel_language_version">>) -> tchannel_language_version;
-header_b2a(<<"tchannel_version">>) ->          tchannel_version;
-header_b2a(_) ->                               undefined.
