@@ -3,6 +3,9 @@
 -define(TCHANNEL_LIB_VERSION, <<"0.1">>).  % version of this tchannel library
 -define(TCHANNEL_VERSION, 2).
 
+-define(DEFAULT_TCP_CONNECT_TIMEOUT, 500).
+-define(DEFAULT_INIT_TIMEOUT, 500).
+
 -type packet_type() ::
     init_req          | % First message on every connection must be init
     init_res          | % Remote response to init req
@@ -16,14 +19,20 @@
     ping_res          | % Ping res (no body)
     error.              % Protocol level error
 
+-type option() ::
+    {tcp_connect_timeout, timeout()} |
+    {init_timeout, timeout()}.
+
 -type error_reason() ::
-    inet:posix() |
-    closed.  % gen_tcp:send/2
+    {option, any()} |
+    closed |
+    inet:posix().
 
 -type packet_id() :: 0..16#fffffffe.
 
 -record(state, {
           sock :: gen_tcp:socket(),
+          options :: [option()],
           headers :: [{binary(), binary()}],
           version :: pos_integer()  % tchannel version reported by remote
 }).
@@ -33,15 +42,30 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% API
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
--export([connect/2, headers/1, header/2, close/1]).
+-export([connect/2, connect/3, headers/1, header/2, close/1]).
 
--spec connect(Address, Port) -> {ok, State} | {error, Reason} when
+connect(Address, Port) ->
+    connect(Address, Port, []).
+
+%% @doc Connect to a tchannel endpoint.
+%%
+%% There are two kinds of time outs in the Options:
+%% * tcp_connect_timeout :: time limit to establish TCP session.
+%% * init_timeout :: time limit to do a phase per init. Actual init time
+%%   will be a few of times longer. TODO: use this value.
+-spec connect(Address, Port, Options) -> {ok, State} | {error, Reason} when
       Address :: inet:ip_address() | inet:hostname(),
       Port :: inet:port_number(),
+      Options :: [option()],
       State :: state(),
       Reason :: error_reason().
-connect(Address, Port) ->
-    connect_1(Address, Port).
+connect(Address, Port, Options) ->
+    case check_options(Options) of
+        ok ->
+            connect_1(Address, Port, merge_options(Options));
+        Error ->
+            Error
+    end.
 
 -spec headers(State) -> [{HeaderKey, HeaderVal}] when
       State :: state(),
@@ -66,10 +90,29 @@ close(#state{sock=Socket}) ->
 %% Internal stuff
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-connect_1(Address, Port) ->
-    case gen_tcp:connect(Address, Port, [binary, {active, false}]) of
+check_options([]) ->
+    ok;
+check_options([{tcp_connect_timeout, T}|Options]) when is_integer(T) ->
+    check_options(Options);
+check_options([{init_timeout, T}|Options]) when is_integer(T) ->
+    check_options(Options);
+check_options([Opt|_]) ->
+    {error, {options, Opt}}.
+
+%% @doc Merges user-defined and default options
+-spec merge_options([option()]) -> [option()].
+merge_options(Options) ->
+    F = fun(K, Default) -> {K, proplists:get_value(K, Options, Default)} end,
+    [
+     F(tcp_connect_timeout, ?DEFAULT_TCP_CONNECT_TIMEOUT),
+     F(init_timeout, ?DEFAULT_INIT_TIMEOUT)
+    ].
+
+connect_1(Address, Port, Options) ->
+    Timeout = proplists:get_value(tcp_connect_timeout, Options),
+    case gen_tcp:connect(Address, Port, [binary, {active, false}], Timeout) of
         {ok, Sock} ->
-            State = #state{sock=Sock},
+            State = #state{sock=Sock, options=Options},
             init_req(State);
         {error, Reason} ->
             {error, Reason}
@@ -90,8 +133,9 @@ init_req(#state{sock=Sock}=State) ->
 -spec init_res(State) -> {ok, State} | {error, Reason} when
       State :: state(),
       Reason:: error_reason().
-init_res(#state{sock=Sock}=State) ->
-    case gen_tcp:recv(Sock, 4) of
+init_res(#state{sock=Sock, options=Options}=State) ->
+    Timeout = proplists:get_value(init_timeout, Options),
+    case gen_tcp:recv(Sock, 4, Timeout) of
         {ok, <<Version:16, NH:16>>} ->
             State2 = State#state{version=Version},
             receive_headers(State2, NH);
@@ -109,9 +153,10 @@ receive_headers(State, NH) ->
 receive_headers(State, 0, Acc) ->
     {ok, State#state{headers=Acc}};
 receive_headers(#state{sock=Sock}=State, NH, Acc) ->
-    case receive_header_value(Sock) of
+    Timeout = proplists:get_value(init_timeout, State#state.options),
+    case receive_header_value(Sock, Timeout) of
         {ok, Key} ->
-            case receive_header_value(Sock) of
+            case receive_header_value(Sock, Timeout) of
                 {ok, Value} ->
                     Acc2 = [{Key, Value} | Acc],
                     receive_headers(State, NH+1, Acc2);
@@ -123,14 +168,15 @@ receive_headers(#state{sock=Sock}=State, NH, Acc) ->
     end.
 
 %% @doc Receive size-2 key and value from a socket.
--spec receive_header_value(Sock) -> {ok, Value} | {error, Reason} when
+-spec receive_header_value(Sock, Timeout) -> {ok, Value} | {error, Reason} when
       Sock :: gen_tcp:socket(),
+      Timeout :: timeout(),
       Value :: binary(),
       Reason :: error_reason().
-receive_header_value(Sock) ->
-    case gen_tcp:recv(Sock, 2) of
+receive_header_value(Sock, Timeout) ->
+    case gen_tcp:recv(Sock, 2, Timeout) of
         {ok, <<HeaderLen:16>>} ->
-            gen_tcp:recv(Sock, HeaderLen);
+            gen_tcp:recv(Sock, HeaderLen, Timeout);
         {error, Reason} ->
             {error, Reason}
     end.
