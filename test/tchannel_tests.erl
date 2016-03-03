@@ -21,7 +21,7 @@ setup() ->
 basic_exported_test_() ->
     {setup,
      fun setup/0,
-     fun({Port, _HostPort}) -> exit(Port, kill) end,  % TODO: doesn't stop it.
+     fun(_) -> ok end,  % echo server stops when stdin closes
      fun(Setup) ->
              [
               ?_test(server_started(Setup))
