@@ -26,6 +26,7 @@
 -type error_reason() ::
     {option, any()} |
     closed |
+    protocol_error |  % received something we don't expect
     inet:posix().
 
 -type packet_id() :: 0..16#fffffffe.
@@ -138,8 +139,10 @@ init_res(#state{sock=Sock, options=Options}=State) ->
     case gen_tcp:recv(Sock, 4, Timeout) of
         {ok, <<Version:16, NH:16>>} ->
             State2 = State#state{version=Version},
+            lager:info("Version: ~p, NH: ~p", [Version, NH]),
             receive_headers(State2, NH);
         {error, Reason} ->
+            lager:info("timeout 1"),
             {error, Reason}
     end.
 
@@ -154,16 +157,20 @@ receive_headers(State, 0, Acc) ->
     {ok, State#state{headers=Acc}};
 receive_headers(#state{sock=Sock}=State, NH, Acc) ->
     Timeout = proplists:get_value(init_timeout, State#state.options),
+    lager:info("Receiving headers..."),
     case receive_header_value(Sock, Timeout) of
         {ok, Key} ->
+            lager:info("Received key: ~p", [Key]),
             case receive_header_value(Sock, Timeout) of
                 {ok, Value} ->
                     Acc2 = [{Key, Value} | Acc],
                     receive_headers(State, NH+1, Acc2);
                 {error, Reason2} ->
+                    lager:info("timeout on value"),
                     {error, Reason2}
             end;
         {error, Reason1} ->
+            lager:info("timeout on key"),
             {error, Reason1}
     end.
 
@@ -175,7 +182,10 @@ receive_headers(#state{sock=Sock}=State, NH, Acc) ->
       Reason :: error_reason().
 receive_header_value(Sock, Timeout) ->
     case gen_tcp:recv(Sock, 2, Timeout) of
+        {ok, <<0:16>>} ->
+            {error, protocol_error};
         {ok, <<HeaderLen:16>>} ->
+            lager:info("Received header length: ~p", [HeaderLen]),
             gen_tcp:recv(Sock, HeaderLen, Timeout);
         {error, Reason} ->
             {error, Reason}
