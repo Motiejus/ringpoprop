@@ -7,6 +7,7 @@
       Port :: port(),
       HostPort :: string().
 setup() ->
+    application:ensure_all_started(ringpoprop),
     {ok, Dir} = file:get_cwd(),
     Python = filename:join([Dir, "_build", "venv", "bin", "python"]),
     Server = filename:join([Dir, "test", "tchannel_echo.py"]),
