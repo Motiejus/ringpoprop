@@ -26,10 +26,11 @@
 -type error_reason() ::
     {option, any()} |
     closed |
-    protocol_error |  % received something we don't expect
+    protocol |  % received something we don't expect
     inet:posix().
 
 -type packet_id() :: 0..16#fffffffe.
+-type packet_type_no() :: 0..16#ff.
 
 -record(state, {
           sock :: gen_tcp:socket(),
@@ -53,7 +54,7 @@ connect(Address, Port) ->
 %% There are two kinds of time outs in the Options:
 %% * tcp_connect_timeout :: time limit to establish TCP session.
 %% * init_timeout :: time limit to do a phase per init. Actual init time
-%%   will be a few of times longer. TODO: use this value.
+%%   will be a few of times longer. TODO: use this value properly.
 -spec connect(Address, Port, Options) -> {ok, State} | {error, Reason} when
       Address :: inet:ip_address() | inet:hostname(),
       Port :: inet:port_number(),
@@ -135,61 +136,64 @@ init_req(#state{sock=Sock}=State) ->
       State :: state(),
       Reason:: error_reason().
 init_res(#state{sock=Sock, options=Options}=State) ->
-    Timeout = proplists:get_value(init_timeout, Options),
-    case gen_tcp:recv(Sock, 4, Timeout) of
-        {ok, <<Version:16, NH:16>>} ->
-            State2 = State#state{version=Version},
-            lager:info("Version: ~p, NH: ~p", [Version, NH]),
-            receive_headers(State2, NH);
+    case recv_packet(Sock, proplists:get_value(init_timeout, Options)) of
+        {ok, {init_req, Id, Payload}} ->
+            init_res_1(State, Id, Payload);
         {error, Reason} ->
-            lager:info("timeout 1"),
             {error, Reason}
     end.
 
--spec receive_headers(State, NH) -> {ok, State} | {error, Reason} when
-      State :: state(),
+init_res_1(State, Id, Payload) ->
+    <<Version:16, NH:16, Rest/binary>> = Payload,
+    Headers = parse_headers(Rest, NH),
+    State2 = State#state{version=Version, headers=Headers},
+    lager:info("Version: ~p, NH: ~p", [Version, NH]),
+    lager:info("Id: ~p, Headers: ~p", [Id, Headers]),
+    {ok, State2}.
+
+-spec parse_headers(Binary, NH) -> [{Key, Value}] when
+      Binary :: binary(),
       NH :: pos_integer(),
-      Reason :: error_reason().
-receive_headers(State, NH) ->
-    receive_headers(State, NH, []).
+      Key :: binary(),
+      Value :: binary().
+parse_headers(Binary, NH) ->
+    {Headers, <<>>} = lists:mapfoldl(
+                        fun(_, Rest1) ->
+                                {Key, Rest2} = parse_header_item(Rest1),
+                                {Val, Rest3} = parse_header_item(Rest2),
+                                {{Key, Val}, Rest3}
+                        end,
+                        Binary,
+                        lists:seq(1, NH)
+                       ),
+    Headers.
 
-receive_headers(State, 0, Acc) ->
-    {ok, State#state{headers=Acc}};
-receive_headers(#state{sock=Sock}=State, NH, Acc) ->
-    Timeout = proplists:get_value(init_timeout, State#state.options),
-    lager:info("Receiving headers..."),
-    case receive_header_value(Sock, Timeout) of
-        {ok, Key} ->
-            lager:info("Received key: ~p", [Key]),
-            case receive_header_value(Sock, Timeout) of
-                {ok, Value} ->
-                    Acc2 = [{Key, Value} | Acc],
-                    receive_headers(State, NH+1, Acc2);
-                {error, Reason2} ->
-                    lager:info("timeout on value"),
-                    {error, Reason2}
-            end;
-        {error, Reason1} ->
-            lager:info("timeout on key"),
-            {error, Reason1}
-    end.
+parse_header_item(<<Len:16, Rest/binary>>) ->
+    LenBytes = Len * 8,
+    <<Value:LenBytes/binary, Rest1/binary>> = Rest,
+    {Value, Rest1}.
 
-%% @doc Receive size-2 key and value from a socket.
--spec receive_header_value(Sock, Timeout) -> {ok, Value} | {error, Reason} when
+-spec recv_packet(Sock, Timeout) ->
+    {ok, {Type, Id, Payload}} | {error, Reason} when
       Sock :: gen_tcp:socket(),
       Timeout :: timeout(),
-      Value :: binary(),
+      Id :: packet_id(),
+      Type :: packet_type(),
+      Payload :: binary(),
       Reason :: error_reason().
-receive_header_value(Sock, Timeout) ->
-    case gen_tcp:recv(Sock, 2, Timeout) of
-        {ok, <<0:16>>} ->
-            {error, protocol_error};
-        {ok, <<HeaderLen:16>>} ->
-            lager:info("Received header length: ~p", [HeaderLen]),
-            gen_tcp:recv(Sock, HeaderLen, Timeout);
-        {error, Reason} ->
-            {error, Reason}
+recv_packet(Sock, Timeout) ->
+    case gen_tcp:recv(Sock, 16, Timeout) of
+        {ok, <<Size:16, TypeId:8, _Reserved1:8, Id:32, _Reserved2:64>>} ->
+            case gen_tcp:recv(Sock, Size, Timeout) of
+                {ok, Payload} ->
+                    {ok, {type_name(TypeId), Id, Payload}};
+                {error, Reason1} ->
+                    {error, Reason1}
+            end;
+        {error, Reason2} ->
+            {error, Reason2}
     end.
+
 
 %% @doc Construct packet for init_req
 -spec construct_init_req() -> Packet when Packet :: iodata().
@@ -240,8 +244,8 @@ construct_packet(Type, Id, Payload) ->
 
 
 %% @doc Numeric tchannel packet type.
--spec type_num(packet_type()) -> 0..16#ff.
-type_num(init_req) ->               16#01.
+-spec type_num(packet_type()) -> packet_type_no().
+type_num(init_req) ->                16#01.
 %type_num(init_res) ->               16#02;
 %type_num(call_req) ->               16#03;
 %type_num(call_res) ->               16#04;
@@ -252,3 +256,16 @@ type_num(init_req) ->               16#01.
 %type_num(ping_req) ->               16#d0;
 %type_num(ping_res) ->               16#d1;
 %type_num(error) ->                  16#ff.
+
+-spec type_name(packet_type_no()) -> packet_type().
+type_name(16#01) -> init_req;
+type_name(16#02) -> init_res;
+type_name(16#03) -> call_req;
+type_name(16#04) -> call_res;
+type_name(16#13) -> call_req_continue;
+type_name(16#14) -> call_res_continue;
+type_name(16#c0) -> cancel;
+type_name(16#c1) -> claim;
+type_name(16#d0) -> ping_req;
+type_name(16#d1) -> ping_res;
+type_name(16#ff) -> error.
