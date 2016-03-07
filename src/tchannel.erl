@@ -1,7 +1,7 @@
 -module(tchannel).
 
 -define(TCHANNEL_LIB_VERSION, <<"0.1">>).  % version of this tchannel library
--define(TCHANNEL_VERSION, 2).
+-define(PROTOCOL_VERSION, 2).
 
 -define(DEFAULT_TCP_CONNECT_TIMEOUT, 500).
 -define(DEFAULT_INIT_TIMEOUT, 500).
@@ -25,6 +25,7 @@
 
 -type error_reason() ::
     {option, any()} |
+    connect_timeout | % timeout from gen_tcp:connect
     closed |
     protocol |  % received something we don't expect
     inet:posix().
@@ -116,6 +117,8 @@ connect_1(Address, Port, Options) ->
         {ok, Sock} ->
             State = #state{sock=Sock, options=Options},
             init_req(State);
+        {error, timeout} ->
+            {error, connect_timeout};
         {error, Reason} ->
             {error, Reason}
     end.
@@ -137,7 +140,7 @@ init_req(#state{sock=Sock}=State) ->
       Reason:: error_reason().
 init_res(#state{sock=Sock, options=Options}=State) ->
     case recv_packet(Sock, proplists:get_value(init_timeout, Options)) of
-        {ok, {init_req, Id, Payload}} ->
+        {ok, {init_res, Id, Payload}} ->
             init_res_1(State, Id, Payload);
         {error, Reason} ->
             {error, Reason}
@@ -145,9 +148,10 @@ init_res(#state{sock=Sock, options=Options}=State) ->
 
 init_res_1(State, Id, Payload) ->
     <<Version:16, NH:16, Rest/binary>> = Payload,
+    lager:info("Version: ~p, NH: ~p", [Version, NH]),
+    %lager:info("size(Rest): ~p, Rest: ~p", [size(Rest), Rest]),
     Headers = parse_headers(Rest, NH),
     State2 = State#state{version=Version, headers=Headers},
-    lager:info("Version: ~p, NH: ~p", [Version, NH]),
     lager:info("Id: ~p, Headers: ~p", [Id, Headers]),
     {ok, State2}.
 
@@ -169,8 +173,7 @@ parse_headers(Binary, NH) ->
     Headers.
 
 parse_header_item(<<Len:16, Rest/binary>>) ->
-    LenBytes = Len * 8,
-    <<Value:LenBytes/binary, Rest1/binary>> = Rest,
+    <<Value:Len/binary, Rest1/binary>> = Rest,
     {Value, Rest1}.
 
 -spec recv_packet(Sock, Timeout) ->
@@ -184,7 +187,7 @@ parse_header_item(<<Len:16, Rest/binary>>) ->
 recv_packet(Sock, Timeout) ->
     case gen_tcp:recv(Sock, 16, Timeout) of
         {ok, <<Size:16, TypeId:8, _Reserved1:8, Id:32, _Reserved2:64>>} ->
-            case gen_tcp:recv(Sock, Size, Timeout) of
+            case gen_tcp:recv(Sock, Size-16, Timeout) of
                 {ok, Payload} ->
                     {ok, {type_name(TypeId), Id, Payload}};
                 {error, Reason1} ->
@@ -216,10 +219,7 @@ construct_init_req() ->
      ]
     ],
 
-    Payload = [
-               <<?TCHANNEL_VERSION:16>>,
-               HeaderPayload
-              ],
+    Payload = [<<?PROTOCOL_VERSION:16>>, HeaderPayload],
     construct_packet(init_req, 1, Payload).
 
 
