@@ -146,13 +146,11 @@ init_res(#state{sock=Sock, options=Options}=State) ->
             {error, Reason}
     end.
 
-init_res_1(State, Id, Payload) ->
+init_res_1(State, _Id, Payload) ->
     <<Version:16, NH:16, Rest/binary>> = Payload,
-    lager:info("Version: ~p, NH: ~p", [Version, NH]),
     %lager:info("size(Rest): ~p, Rest: ~p", [size(Rest), Rest]),
     Headers = parse_headers(Rest, NH),
     State2 = State#state{version=Version, headers=Headers},
-    lager:info("Id: ~p, Headers: ~p", [Id, Headers]),
     {ok, State2}.
 
 -spec parse_headers(Binary, NH) -> [{Key, Value}] when
