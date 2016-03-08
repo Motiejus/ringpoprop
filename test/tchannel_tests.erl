@@ -33,5 +33,5 @@ basic_exported_test_() ->
 server_started({_, HostPort}) ->
     [Host, Port] = string:tokens(HostPort, ":"),
     {ok, T} = tchannel:connect(Host, list_to_integer(Port)),
-    ?assertEqual(<<"2">>, tchannel:header(T, <<"tchannel_version">>)),
+    ?assertEqual(<<"python">>, tchannel:header(T, <<"tchannel_language">>)),
     tchannel:close(T).
