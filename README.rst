@@ -51,23 +51,49 @@ Constructing headers for ``tchannel:send/3``. See tchannel spec for details::
              {sk, undefined}     % optional
              {rd, undefined}],   % optional
 
+Constructing a sub-channel::
+
+  {ok, SubChannel} = tchannel:create_sub(Channel, <<"echo_service">>),
+
 Contstructing outgoing message::
 
   MsgOpts = [{ttl, 1000},
              {tracing, undefined}, % not supported
-             {service, <<"echo_service">>},
              {headers, Headers}],
 
 Sending the actual message::
 
-  {ok, Msg} = tchannel:send(Channel, <<"ping">>, MsgOpts),
+  {ok, Msg} = tchannel:send(SubChannel, <<"ping">>, MsgOpts),
 
-Wait for the response (init_res) to that message::
+Wait for the response (``init_res``) to that message::
 
   {ok, Reply} = tchannel:recv(Msg).
-  Headers = tchannel_resp:headers(),
-  Code = tchannel_resp:code(),
-  {Arg1, Arg2, Arg3} = tchannel_resp:payload().
+  Headers = tchannel_resp:headers(Reply),
+  Code = tchannel_resp:code(Reply),
+  {Arg1, Arg2, Arg3} = tchannel_resp:payload(Reply).
+
+Bluntly receiving from the socket::
+  case tchannel:recv(SubChannel, Timeout) of
+    {ok, Reply} ->
+        ...
+    {error, Error} ->
+        ...
+    end.
+
+Architecture
+------------
+
+I expect to make this true in a short-term::
+
+    1 tchannel_sup (app sup)
+        n tchannel_conn_sup
+            1 tchannel_conn_reader (worker)
+            m tchannel_conn_dispatch (worker)
+
+* ``tchannel_sup`` main application supervisor.
+* ``tchannel_conn_sup`` 1 per tchannel tcp socket.
+* ``tchannel_conn_reader`` scans socket and sends to the relevant dispatchers.
+* ``tchannel_conn_dispatch`` receives from reader and sends to the relevant dispatchers.
 
 TODO
 ----
