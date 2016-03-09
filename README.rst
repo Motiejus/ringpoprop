@@ -18,7 +18,7 @@ Things to do before any kind of announcement of this experiment:
 # Elvis.
 
 TChannel
---------
+========
 
 This module implements a small enough subset of tchannel, just enough to be
 able to establish a connection, keep it open, send and receive simple (<64KB)
