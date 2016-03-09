@@ -65,9 +65,22 @@ Sending the actual message::
 Wait for the response (init_res) to that message::
 
   {ok, Reply} = tchannel:recv(Msg).
+  Headers = tchannel_resp:headers(),
+  Code = tchannel_resp:code(),
+  {Arg1, Arg2, Arg3} = tchannel_resp:payload().
 
-TODO: what to do with that message? Get this stuff:
+TODO
+----
 
-1. headers.
-2. response code.
-3. response payload.
+The API and implementation are explicitly minimalistic, because the intention
+is to implement as less as possible without overthinking. It is better to make
+big changes when the codebase is small and limited, rather than big and
+complete. With a good introduction, we lack:
+
+1. Receiving a request without sending a message.
+2. Node and Go have sub-channels. In node/go, a sub-channel can have multiple
+   peers. Do we need subchannels at all?
+3. Initial version will definitely not implement >64K requests and responses.
+4. In Erlang, a TChannel instance maps 1:1 to the underlying TCP connection. It
+   is not true in Go/Node APIs, but is not mandated by the protocol. We'll know
+   if we need to do that after actually using it for some time.
